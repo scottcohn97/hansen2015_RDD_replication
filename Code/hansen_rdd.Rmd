@@ -1,0 +1,660 @@
+---
+title: "Hansen (2015) RDD Replication"
+author: "Scott Cohn"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  pdf_document:
+    fig_height: 3
+    fig_width: 5
+  html_document:
+    fig_height: 3
+    fig_width: 5
+  word_document:
+    fig_height: 3
+    fig_width: 5
+---
+
+```{r, setup, include=FALSE}
+require(mosaic)   # Load additional packages here 
+knitr::opts_chunk$set(
+  echo=TRUE,
+  warning=FALSE,
+  message=FALSE,
+  cache=TRUE,
+  tidy=FALSE,     # display code as typed
+  size="small")   # slightly smaller font for code
+
+# Remove scientific notation
+options(scipen=999)
+```
+
+## Paper Summary
+
+*Briefly summarize this paper. What is his research question? What data does he use? What is his research design, or "identification strategy"? What are his conclusions?*
+
+Hansen is interested in determining whether the sanctions on a driving under the influence (DUI) affect recidivism. The DUI is determined by the blood alcohol content (BAC). This paper uses administrative records on a 512,964 DUI stops in Washington state (WA). A BAC above 0.08 denotes a DUI and forms a sharp threshold. Hansen exploits this threshold in a sharp regression discontinuity design.
+
+This paper finds evidence that having a blood alcohol content about the DUI threshold reduces rates of recidivism over the next four years.
+
+## Setup
+
+```{r libs}
+library(tidyverse)
+library(hrbrthemes)
+library(gcookbook)
+library(magrittr)
+library(modelsummary)
+library(sandwich)
+library(estimatr)
+library(lmtest)
+library(rdd)
+library(rdrobust)
+library(rddensity)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(broom)
+library(tidymodels)
+```
+
+```{r funcs}
+
+read_data <- function(df)
+{
+  full_path <- paste("https://raw.githubusercontent.com/scottcohn97/hansen2015_RDD_replication/main/Data/", 
+                     df, sep = "")
+  df <- read_csv(full_path)
+  return(df)
+}
+```
+
+```{r}
+# load data
+dwi <- read_data("hansen_dwi.csv")
+
+dwi %>% colnames()
+```
+
+## Reproducing
+
+*In the United States, an officer can arrest a driver if after giving them a blood alcohol content (BAC) test they learn the driver had a BAC of 0.08 or higher. We will only focus on the 0.08 BAC cutoff. We will be ignoring the 0.15 cutoff for all this analysis. Create a dummy equaling 1 if `bac1` \>= 0.08 and 0 otherwise in your do file or R file.*
+
+Here we create the dummy variable.
+
+```{r tidy}
+dwi <- dwi %>% 
+  # create binary for cutoff
+  mutate(dui = if_else(bac1 >= 0.08, 1, 0))
+```
+
+Next, we check to make sure it was encoded correctly. We do this visually.
+
+```{r}
+p_dui <- 
+  dwi %>% 
+    ggplot(aes(x = bac1, y = dui)) + 
+    geom_point(alpha = 0.2) + 
+    geom_vline(aes(xintercept = 0.08), linetype = 2, color = "tomato") + 
+    labs(x = "BAC1", y = "DUI") + 
+    theme_classic() +
+    coord_fixed(ratio = 0.25)
+
+ggsave(filename = "../Figures/dui_encoding.pdf", plot = p_dui, device = cairo_pdf())
+ggsave(filename = "../Figures/dui_encoding.png", plot = p_dui)
+```
+
+This is obviously a sharp regression discontinuity. Next, we want to create Figure 1.
+
+### Figure 1
+
+*The first thing to do in any RDD is look at the raw data and see if there's any evidence for manipulation ("sorting on the running variable"). If people were capable of manipulating their blood alcohol content (`bac1`), describe the test we would use to check for this. Now evaluate whether you see this in these data? Either recreate Figure 1 using the `bac1` variable as your measure of blood alcohol content or use your own density test from software. Do you find evidence for sorting on the running variable? Explain your results. Compare what you found to what Hansen found.*
+
+```{r fig1}
+
+fig1 <-
+  dwi %>%
+    ggplot(aes(x = bac1)) +
+    geom_histogram(binwidth = 0.001, fill = "#8aa1b4") +
+    geom_vline(aes(xintercept = 0.08), size = 1, linetype = 2,
+               color = "tomato", alpha = 0.7) +
+    geom_vline(aes(xintercept = 0.15), size = 1, linetype = 2,
+               color = "tomato", alpha = 0.7) +
+    labs(x = "BAC",
+         y = "Frequency",
+         title = "BAC histogram",
+         subtitle = "Figure 1, Hansen (2015)") +
+    scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+    theme_ipsum() + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 15),
+          title = element_text(size = 15))
+
+ggsave(filename = "../Figures/figure1.pdf", plot = fig1, device = cairo_pdf())
+ggsave(filename = "../Figures/figure1.png", plot = fig1)
+```
+
+From the distribution of blood alcohol content (BAC), we see little to no evidence of endogenous sorting. There appears to be no non-random heaping that might bias the RDD. This aligns exactly with what Hansen (2015) found.
+
+### Table 2
+
+\
+The second thing we need to do is check for covariate balance. Recreate Table 2 Panel A but only white male, age and accident (`acc`) as dependent variables. Use your equation (1) for this. Are the covariates balanced at the cutoff? It's okay if they are not exactly the same as Hansen's.
+
+Equation 1:
+
+$$
+y_i = X_i' \gamma + \alpha_1 \textrm{DUI}_i + \alpha_2 \textrm{BAC}_i \times \textrm{DUI}_i + u_i,
+$$
+
+where $y_i$ is a measure of recidivism, \$X_i\$ is a vector of controls, and the BAC variable is rescaled around the relevant threshold.
+
+```{r means, eval=FALSE, include=FALSE}
+
+means_bac1 <- 
+  dwi %>% 
+    mutate(bac1 = round(bac1, 3)) %>%
+    filter(bac1 == 0.079) %>%
+    summarise(across(c("male", "white", "aged", "acc"), ~ mean(.x, na.rm = T))) %>%
+    mutate_if(is.numeric, round, 3) %>%
+    identity()
+
+means_bac1 <- cbind(variable = "Mean (at 0.079)", means_bac1)
+ctrls <- cbind(variable = "Controls", 
+               male = "No", white = "No", aged = "No", acc = "No") 
+
+nrow_means <- 
+  dwi %>% 
+    mutate(bac1 = round(bac1, 3)) %>%
+    filter(bac1 == 0.079) %>%
+    nrow()
+
+num_obs <- cbind(variable = "Observations",
+                 male = nrow_means, white = nrow_means, 
+                 aged = nrow_means, acc = nrow_means)
+
+means_bac1 <- rbind(means_bac1, ctrls, num_obs) 
+```
+
+```{r IKbw}
+# optimal bandwidth -- use Imbens/Kalyanaraman bin-widths
+# Imbens, Guido and Karthik Kalyanaraman. (2009)
+with(dwi, IKbandwidth(X = bac1, Y = recidivism, 
+                      cutpoint = 0.08, 
+                      kernel = "rectangular", 
+                      verbose = TRUE))
+```
+
+This optimal bandwidth is pretty close to what was used in the paper. The differences may be explained by the data not being an exact match (and the original analysis was done in Stata).
+
+We can run this RDD two ways. First, use the base regression package and add kernel weights and robust standard errors. Second we use the `RDestimate` package. The results are analogous.
+
+```{r lm_rob, eval=FALSE, include=FALSE}
+# bandwidth -- use 0.05 per the paper
+bw <- 0.05
+
+# kernel weights (rectangular)
+dwi$wt <- kernelwts(dwi$bac1, center = 0.08, bw = bw, kernel = "rectangular")
+
+# run model
+rdd_lm <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + male + white + aged + acc, 
+       #weights = wt, 
+       clusters = dui,
+       data = dwi#subset(dwi, wt > 0))
+
+# modelsummary(rdd_lm, output = "..\Tables\table2_lm_rob.tex")
+```
+
+```{r}
+# run model
+tab2mod <- RDestimate(recidivism ~ bac1 | male + white + aged + acc, 
+                        data = dwi, cutpoint = 0.08, 
+                        bw = 0.5, 
+                        kernel = "rectangular", 
+                        cluster = dwi$dui,
+                        model = TRUE,
+                        frame = FALSE,
+                        verbose = FALSE)
+
+# tab2 est
+tab2est <- 
+  tidy(tab2mod$model[[1]])[5:8,] %>% 
+  rownames_to_column() %>%
+  gather(variable, value, -rowname) %>%
+  spread(rowname, value) %>%
+  rename(male = "1", white = "2", aged = "3", acc = "4") 
+
+# join with means
+tab2 <- 
+  tab2est %>% 
+  filter(variable != "term") %>%
+  mutate(male = as.numeric(male), white = as.numeric(white), 
+         aged = as.numeric(aged), acc = as.numeric(acc)) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  rbind(means_bac1) %>%
+  filter(variable %in% c("estimate", "std.error", 
+                         "Mean (at 0.079)", "Controls", "Observations")) %>%
+  mutate(variable = if_else(variable == "estimate", "DUI", variable)) %>%
+  rename(Characteristics = "variable",
+         Male = "male",
+         White = "white",
+         Age = "aged",
+         Accident = "acc") %>%
+  kable(caption = "Regression Discontinuity Estimates for the Effect of Exceeding BAC Thresholds on Predetermined Characteristics",
+        full_width = F) %>%
+  kable_classic("striped") %>%
+  footnote(general = "This table contains regression discontinuity based estimates of the effect of having BAC above the legal thresholds on predetermined characteristics. Panel A focuses on the estimated effect of BAC above the DUI threshold. The regression has a bandwidth of 0.05 and uses a rectangular kernel for weighting. Based on data from the 1999–2007 Washington State Impaired Driver Program.")
+
+save_kable(tab2, file = "../Tables/Table2.html")
+```
+
+**\
+Hansen (2015):**
+
+For each of the driver demographics ... I fail to reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI and aggravated DUI.
+
+**Replication:**
+
+For `male`, `white` and `aged` (age), I reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI.
+
+For `acc`, I fail to reject the null ...
+
+### Figure 2 Panels A-D
+
+*Recreate Figure 2 panel A-D. You can use the -cmogram- command in Stata to do this. Fit both linear and quadratic with confidence intervals. Discuss what you find and compare it with Hansen's paper.*
+
+```{r fig2a}
+# Figure 2 Panel A - Accident at scene
+
+# linear
+a1 <- 
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_acc = mean(acc),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_acc, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ x, se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0, 0.26), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2, 0.25)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Linear") +
+        theme_classic() +
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None") 
+
+# quadratic
+a2 <- 
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_acc = mean(acc),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_acc, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ poly(x, 2), se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0, 0.26), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2, 0.25)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Quadratic") +
+        theme_classic() +
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+(a1 + a2) +
+  plot_annotation(title = "Panel A. Accident at scene")
+```
+
+```{r fig2b}
+# Figure 2 Panel B - Male
+
+# linear
+b1 <- 
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_male = mean(male),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_male, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ x, se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.73, 0.83), 
+                           breaks = c(0.74, 0.76, 0.78, 0.8, 0.82)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +      
+        labs(title = "Panel B. Male") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+# quadratic
+b2 <-
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_male = mean(male),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_male, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ poly(x, 2), se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.73, 0.83), 
+                           breaks = c(0.74, 0.76, 0.78, 0.8, 0.82)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Panel B. Male") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+(b1 + b2) +
+    plot_annotation(title = "Panel B. Male")
+```
+
+```{r fig2c}
+# Figure 2 Panel C - Age
+
+c1 <- 
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_age = mean(aged / 100),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_age, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ x, se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.33, 0.39), 
+                           breaks = c(0.34, 0.35, 0.36, 0.37, 0.38)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Linear") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+c2 <- 
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_age = mean(aged / 100),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_age, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+                  formula = y ~ poly(x, 2), se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.33, 0.39), 
+                           breaks = c(0.34, 0.35, 0.36, 0.37, 0.38)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Quadratic") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+(c1 + c2) +
+  plot_annotation(title = "Panel C. Age")
+```
+
+```{r fig2d}
+# Figure 2 Panel D - White
+
+d1 <-
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_white = mean(white),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_white, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+          formula = y ~ x, se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.79, 0.91), 
+                           breaks = c(0.80, 0.82, 0.84, 0.86, 0.88, 0.90)) +
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Linear") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None")
+
+d2 <-
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_white = mean(white),
+              dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_white, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+          formula = y ~ poly(x, 2), se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.79, 0.91), 
+                           breaks = c(0.80, 0.82, 0.84, 0.86, 0.88, 0.90)) + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Quadratic") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              #plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None") 
+
+(d1 + d2)  +
+    plot_annotation(title = "Panel D. White")
+```
+
+```{r fig2_save}
+# save plots
+ggsave(plot = a1, filename = "../Figures/Figure2_A1.pdf", device = cairo_pdf())
+ggsave(plot = a2, filename = "../Figures/Figure2_A2.pdf", device = cairo_pdf())
+ggsave(plot = a1, filename = "../Figures/Figure2_A1.png")
+ggsave(plot = a2, filename = "../Figures/Figure2_A2.png")
+
+ggsave(plot = b1, filename = "../Figures/Figure2_B1.pdf", device = cairo_pdf())
+ggsave(plot = b2, filename = "../Figures/Figure2_B2.pdf", device = cairo_pdf())
+ggsave(plot = b1, filename = "../Figures/Figure2_B1.png")
+ggsave(plot = b2, filename = "../Figures/Figure2_B2.png")
+
+ggsave(plot = c1, filename = "../Figures/Figure2_C1.pdf", device = cairo_pdf())
+ggsave(plot = c2, filename = "../Figures/Figure2_C2.pdf", device = cairo_pdf())
+ggsave(plot = c1, filename = "../Figures/Figure2_C1.png")
+ggsave(plot = c2, filename = "../Figures/Figure2_C2.png")
+
+ggsave(plot = d1, filename = "../Figures/Figure2_D1.pdf", device = cairo_pdf())
+ggsave(plot = d2, filename = "../Figures/Figure2_D2.pdf", device = cairo_pdf())
+ggsave(plot = d1, filename = "../Figures/Figure2_D1.png")
+ggsave(plot = d2, filename = "../Figures/Figure2_D2.png")
+```
+
+### Table 3, Col 1, Panel A + B
+
+*Estimate equation (1) with recidivism (`recid`) as the outcome. This corresponds to Table 3 column 1, but since I am missing some of his variables, your sample size will be the entire dataset of 214,558. Nevertheless, replicate Table 3, column 1, Panels A and B. Note that these are local linear regressions and Panel A uses as its bandwidth 0.03 to 0.13. But Panel B has a narrower bandwidth of 0.055 to 0.105. Your table should have three columns and two A and B panels associated with the different bandwidths.:*
+
+1.  *Column 1: control for the `bac1` linearly*
+2.  *Column 2: interact `bac1` with cutoff linearly*
+3.  *Column 3: interact `bac1` with cutoff linearly and as a quadratic*
+4.  *For all analysis, estimate uncertainty using heteroskedastic robust standard errors. [ed: But if you want to show off, use Kolesár and Rothe's 2018 "honest" confidence intervals (only available in R).]*
+
+#### **Panel A**
+
+Panel A contains estimates with a bandwidth of 0.05, with all regressions utilizing a rectangular kernel for weighting.
+
+```{r kern_rect}
+# kernel weights (rectangular)
+dwi$wt_3A <- kernelwts(dwi$bac1, center = 0.08, bw = 0.05, kernel = "rectangular")
+```
+
+```{r pAc1}
+# column 1 -- control for bac1 linearly
+model_3a1 <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + year + 
+                         male + white + aged, 
+                       weights = wt_3A, data = subset(dwi, wt_3A > 0))
+
+# model summary
+modelsummary(model_3a1)
+```
+
+```{r}
+# column 2 -- control for bac1 with cutoff linearly
+```
+
+```{r}
+# column 3 -- interact bac1 with cutoff linearly and as quadratic
+```
+
+#### **Panel B**
+
+Panel B contains estimates with a bandwidth of 0.025, with all regressions utilizing a rectangular kernel for weighting.
+
+```{r kern_weights2}
+# kernel weights (rectangular)
+dwi$wt_3B <- kernelwts(dwi$bac1, center = 0.08, bw = 0.025, kernel = "rectangular")
+```
+
+```{r}
+model_3b1 <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + 
+                         year + male + white + aged, 
+                       weights = wt_3B, data = subset(dwi, wt_3B > 0))
+
+# model summary
+summary(model_3b1)
+```
+
+### Figure 3
+
+*Recreate the top panel of Figure 3 according to the following rule:*
+
+1.  *Fit linear fit using only observations with less than 0.15 bac on the `bac1`*
+2.  *Fit quadratic fit using only observations with less than 0.15 bac on the `bac1`*
+
+```{r kwt_f3b}
+# kernel weights (rectangular)
+dwi$wt_f3B <- kernelwts(dwi$bac1, center = 0.15, bw = 0.002, kernel = "rectangular")
+```
+
+```{r panA}
+# Panel A. All offenders
+
+# linear
+A_all_lin <-
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_rec = mean(recidivism),
+                  dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_rec, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+              formula = y ~ x, se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.07, 0.17), 
+                           breaks = c(0.08, 0.1, 0.12, 0.14, 0.16)) + 
+        labs(title = "Panel A. All offenders", subtitle = "Linear fit") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None") +
+        coord_fixed()
+
+# quadratic
+A_all_quad <-
+    dwi %>%
+        group_by(bac1) %>%
+        mutate(avg_rec = mean(recidivism),
+                  dui = if_else(bac1 > 0.15, 2, dui)) %>%
+        ggplot(aes(x = bac1, y = avg_rec, color = factor(dui))) + 
+        geom_vline(aes(xintercept = 0.08), color = "tomato") +
+        geom_vline(aes(xintercept = 0.15), color = "tomato") +
+        geom_point(alpha = 0.3, fill = "white") + 
+        geom_smooth(method = "lm_robust",
+              formula = y ~ poly(x, 2), se = TRUE) + 
+        scale_x_continuous(name = "BAC", limits = c(0, 0.21), 
+                           breaks = c(0.05, 0.1, 0.15, 0.2)) + 
+        scale_y_continuous(limits = c(0.07, 0.17), 
+                           breaks = c(0.08, 0.1, 0.12, 0.14, 0.16)) + 
+        labs(title = "Panel A. All offenders", subtitle = "Quadratic fit") +
+        theme_classic() + 
+        theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
+              plot.title = element_text(size=20),
+              axis.text.x = element_text(size = 15),
+              axis.title.x = element_text(size = 17),
+              axis.text.y = element_text(size = 15),
+              axis.title.y = element_blank(),
+              legend.position = "None") +
+        coord_fixed()
+
+A_all_lin + A_all_quad
+```
+
+### Reflecting on exercise
+
+*Discuss what you learned from this exercise. What was the hypothesis you tested and what did you find? How confident are you in Hansen's original conclusion? Why/why not?*
+
+```{r sessInfo}
+sessionInfo()
+```
