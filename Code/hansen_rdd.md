@@ -670,18 +670,6 @@ dwi$wtc1 <- kernelwts(dwi$bac1, center = 0.08, bw = 0.5, kernel = "rectangular")
 dwi$wtc2 <- kernelwts(dwi$bac1, center = 0.08, bw = 0.25, kernel = "rectangular")
 ```
 
-``` r
-# test data to get LATE estimate
-test_data_tab3 <- data.frame(
-  dui = c(0, 1), 
-  bac1 = c(.08, .08),
-  year = mean(dwi$year),
-  male = mean(dwi$male),
-  white = mean(dwi$white),
-  aged = mean(dwi$aged)
-)
-```
-
 #### **Panel A**
 
 Panel A contains estimates with a bandwidth of 0.05, with all
@@ -1087,6 +1075,14 @@ A_all_quad <-
 *Discuss what you learned from this exercise. What was the hypothesis
 you tested and what did you find? How confident are you in Hansen’s
 original conclusion? Why/why not?*
+
+I learned to read documentation for wrapper packages because they are
+not always what they seem! This has cemented for me the importance of
+understanding the back-end of the code that I am using. I tested whether
+whether the sanctions on a driving under the influence (DUI) affect
+recidivism. I am confident in Hansen’s results – although we do not have
+all of the data. Therefore, I looked at whether my estimates were of the
+same sign and similar magnitude.
 
 ``` r
 sessionInfo()
