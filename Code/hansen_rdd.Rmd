@@ -3,15 +3,8 @@ title: "Hansen (2015) RDD Replication"
 author: "Scott Cohn"
 date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
 output: 
-  pdf_document:
-    fig_height: 3
-    fig_width: 5
-  html_document:
-    fig_height: 3
-    fig_width: 5
-  word_document:
-    fig_height: 3
-    fig_width: 5
+  github_document:
+always_allow_html: true
 ---
 
 ```{r, setup, include=FALSE}
@@ -36,12 +29,11 @@ Hansen is interested in determining whether the sanctions on a driving under the
 
 This paper finds evidence that having a blood alcohol content about the DUI threshold reduces rates of recidivism over the next four years.
 
-## Setup
-
 ```{r libs}
 library(tidyverse)
 library(hrbrthemes)
 library(gcookbook)
+library(ggthemes)
 library(magrittr)
 library(modelsummary)
 library(sandwich)
@@ -68,14 +60,16 @@ read_data <- function(df)
 }
 ```
 
-```{r}
+```{r import}
 # load data
 dwi <- read_data("hansen_dwi.csv")
 
 dwi %>% colnames()
 ```
 
-## Reproducing
+## Replication
+
+### Data
 
 *In the United States, an officer can arrest a driver if after giving them a blood alcohol content (BAC) test they learn the driver had a BAC of 0.08 or higher. We will only focus on the 0.08 BAC cutoff. We will be ignoring the 0.15 cutoff for all this analysis. Create a dummy equaling 1 if `bac1` \>= 0.08 and 0 otherwise in your do file or R file.*
 
@@ -89,16 +83,21 @@ dwi <- dwi %>%
 
 Next, we check to make sure it was encoded correctly. We do this visually.
 
-```{r}
+```{r p_dui}
 p_dui <- 
   dwi %>% 
     ggplot(aes(x = bac1, y = dui)) + 
     geom_point(alpha = 0.2) + 
     geom_vline(aes(xintercept = 0.08), linetype = 2, color = "tomato") + 
     labs(x = "BAC1", y = "DUI") + 
-    theme_classic() +
+    theme_clean() +
+    theme(plot.background = element_rect(color = "white")) +
     coord_fixed(ratio = 0.25)
 
+p_dui
+```
+
+```{r, eval=FALSE, include=FALSE}
 ggsave(filename = "../Figures/dui_encoding.pdf", plot = p_dui, device = cairo_pdf())
 ggsave(filename = "../Figures/dui_encoding.png", plot = p_dui)
 ```
@@ -124,11 +123,16 @@ fig1 <-
          title = "BAC histogram",
          subtitle = "Figure 1, Hansen (2015)") +
     scale_y_continuous(expand = expansion(mult = c(0, .1))) +
-    theme_ipsum() + 
+    theme_clean() + 
     theme(axis.text = element_text(size = 12),
           axis.title = element_text(size = 15),
-          title = element_text(size = 15))
+          title = element_text(size = 15),
+          plot.background = element_rect(color = "white"))
 
+fig1
+```
+
+```{r fig1_save, eval=FALSE, include=FALSE}
 ggsave(filename = "../Figures/figure1.pdf", plot = fig1, device = cairo_pdf())
 ggsave(filename = "../Figures/figure1.png", plot = fig1)
 ```
@@ -137,7 +141,6 @@ From the distribution of blood alcohol content (BAC), we see little to no eviden
 
 ### Table 2
 
-\
 The second thing we need to do is check for covariate balance. Recreate Table 2 Panel A but only white male, age and accident (`acc`) as dependent variables. Use your equation (1) for this. Are the covariates balanced at the cutoff? It's okay if they are not exactly the same as Hansen's.
 
 Equation 1:
@@ -146,9 +149,9 @@ $$
 y_i = X_i' \gamma + \alpha_1 \textrm{DUI}_i + \alpha_2 \textrm{BAC}_i \times \textrm{DUI}_i + u_i,
 $$
 
-where $y_i$ is a measure of recidivism, \$X_i\$ is a vector of controls, and the BAC variable is rescaled around the relevant threshold.
+where $y_i$ is a measure of recidivism, $X_i$ is a vector of controls, and the BAC variable is rescaled around the relevant threshold.
 
-```{r means, eval=FALSE, include=FALSE}
+```{r means}
 
 means_bac1 <- 
   dwi %>% 
@@ -204,11 +207,12 @@ rdd_lm <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + male + white + aged +
 # modelsummary(rdd_lm, output = "..\Tables\table2_lm_rob.tex")
 ```
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 # run model
 tab2mod <- RDestimate(recidivism ~ bac1 | male + white + aged + acc, 
                         data = dwi, cutpoint = 0.08, 
                         bw = 0.5, 
+                        se.type = "HC1",
                         kernel = "rectangular", 
                         cluster = dwi$dui,
                         model = TRUE,
@@ -239,24 +243,22 @@ tab2 <-
          White = "white",
          Age = "aged",
          Accident = "acc") %>%
-  kable(caption = "Regression Discontinuity Estimates for the Effect of Exceeding BAC Thresholds on Predetermined Characteristics",
-        full_width = F) %>%
-  kable_classic("striped") %>%
-  footnote(general = "This table contains regression discontinuity based estimates of the effect of having BAC above the legal thresholds on predetermined characteristics. Panel A focuses on the estimated effect of BAC above the DUI threshold. The regression has a bandwidth of 0.05 and uses a rectangular kernel for weighting. Based on data from the 1999–2007 Washington State Impaired Driver Program.")
+  kable(caption = "Regression Discontinuity Estimates for the Effect of Exceeding BAC Thresholds on Predetermined Characteristics") %>%
+  #kable_styling(latex_options = c("striped"), position = "center") %>%
+  kable_classic() %>%
+  footnote(general = "This table contains regression discontinuity based estimates of the effect of having BAC above the legal thresholds on predetermined characteristics. Panel A focuses on the estimated effect of BAC above the DUI threshold. The regression has a bandwidth of 0.05 and uses a rectangular kernel for weighting. Based on data from the 1999–2007 Washington State Impaired Driver Program.", threeparttable = T)
 
-save_kable(tab2, file = "../Tables/Table2.html")
+tab2
 ```
 
-**\
-Hansen (2015):**
 
-For each of the driver demographics ... I fail to reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI and aggravated DUI.
+**Hansen (2015):**
+
+For each of the driver demographics, I fail to reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI and aggravated DUI.
 
 **Replication:**
 
-For `male`, `white` and `aged` (age), I reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI.
-
-For `acc`, I fail to reject the null ...
+For `male`, `white` and `aged` (age), I reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI. For `acc`, I fail to reject the null that the predetermined characteristics are unrelated to the BAC cutoffs for DUI.
 
 ### Figure 2 Panels A-D
 
@@ -283,9 +285,9 @@ a1 <-
                            breaks = c(0.05, 0.1, 0.15, 0.2, 0.25)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Linear") +
-        theme_classic() +
+        theme_clean() +
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -310,9 +312,9 @@ a2 <-
                            breaks = c(0.05, 0.1, 0.15, 0.2, 0.25)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Quadratic") +
-        theme_classic() +
+        theme_clean() +
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -343,10 +345,10 @@ b1 <-
         scale_y_continuous(limits = c(0.73, 0.83), 
                            breaks = c(0.74, 0.76, 0.78, 0.8, 0.82)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +      
-        labs(title = "Panel B. Male") +
-        theme_classic() + 
+        labs(title = "Linear") +
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -370,10 +372,10 @@ b2 <-
         scale_y_continuous(limits = c(0.73, 0.83), 
                            breaks = c(0.74, 0.76, 0.78, 0.8, 0.82)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
-        labs(title = "Panel B. Male") +
-        theme_classic() + 
+        labs(title = "Quadratic") +
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -404,9 +406,9 @@ c1 <-
                            breaks = c(0.34, 0.35, 0.36, 0.37, 0.38)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Linear") +
-        theme_classic() + 
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -430,9 +432,9 @@ c2 <-
                            breaks = c(0.34, 0.35, 0.36, 0.37, 0.38)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Quadratic") +
-        theme_classic() + 
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -463,9 +465,9 @@ d1 <-
                            breaks = c(0.80, 0.82, 0.84, 0.86, 0.88, 0.90)) +
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Linear") +
-        theme_classic() + 
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -489,9 +491,9 @@ d2 <-
                            breaks = c(0.80, 0.82, 0.84, 0.86, 0.88, 0.90)) + 
         scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
         labs(title = "Quadratic") +
-        theme_classic() + 
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              #plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -502,27 +504,27 @@ d2 <-
     plot_annotation(title = "Panel D. White")
 ```
 
-```{r fig2_save}
+```{r fig2_save, eval=FALSE, include=FALSE}
 # save plots
-ggsave(plot = a1, filename = "../Figures/Figure2_A1.pdf", device = cairo_pdf())
-ggsave(plot = a2, filename = "../Figures/Figure2_A2.pdf", device = cairo_pdf())
-ggsave(plot = a1, filename = "../Figures/Figure2_A1.png")
-ggsave(plot = a2, filename = "../Figures/Figure2_A2.png")
+ggsave(plot = a1, filename = "../Figures/figure2_A1.pdf", device = cairo_pdf())
+ggsave(plot = a2, filename = "../Figures/figure2_A2.pdf", device = cairo_pdf())
+ggsave(plot = a1, filename = "../Figures/figure2_A1.png")
+ggsave(plot = a2, filename = "../Figures/figure2_A2.png")
 
-ggsave(plot = b1, filename = "../Figures/Figure2_B1.pdf", device = cairo_pdf())
-ggsave(plot = b2, filename = "../Figures/Figure2_B2.pdf", device = cairo_pdf())
-ggsave(plot = b1, filename = "../Figures/Figure2_B1.png")
-ggsave(plot = b2, filename = "../Figures/Figure2_B2.png")
+ggsave(plot = b1, filename = "../Figures/figure2_B1.pdf", device = cairo_pdf())
+ggsave(plot = b2, filename = "../Figures/figure2_B2.pdf", device = cairo_pdf())
+ggsave(plot = b1, filename = "../Figures/figure2_B1.png")
+ggsave(plot = b2, filename = "../Figures/figure2_B2.png")
 
-ggsave(plot = c1, filename = "../Figures/Figure2_C1.pdf", device = cairo_pdf())
-ggsave(plot = c2, filename = "../Figures/Figure2_C2.pdf", device = cairo_pdf())
-ggsave(plot = c1, filename = "../Figures/Figure2_C1.png")
-ggsave(plot = c2, filename = "../Figures/Figure2_C2.png")
+ggsave(plot = c1, filename = "../Figures/figure2_C1.pdf", device = cairo_pdf())
+ggsave(plot = c2, filename = "../Figures/figure2_C2.pdf", device = cairo_pdf())
+ggsave(plot = c1, filename = "../Figures/figure2_C1.png")
+ggsave(plot = c2, filename = "../Figures/figure2_C2.png")
 
-ggsave(plot = d1, filename = "../Figures/Figure2_D1.pdf", device = cairo_pdf())
-ggsave(plot = d2, filename = "../Figures/Figure2_D2.pdf", device = cairo_pdf())
-ggsave(plot = d1, filename = "../Figures/Figure2_D1.png")
-ggsave(plot = d2, filename = "../Figures/Figure2_D2.png")
+ggsave(plot = d1, filename = "../Figures/figure2_D1.pdf", device = cairo_pdf())
+ggsave(plot = d2, filename = "../Figures/figure2_D2.pdf", device = cairo_pdf())
+ggsave(plot = d1, filename = "../Figures/figure2_D1.png")
+ggsave(plot = d2, filename = "../Figures/figure2_D2.png")
 ```
 
 ### Table 3, Col 1, Panel A + B
@@ -534,49 +536,156 @@ ggsave(plot = d2, filename = "../Figures/Figure2_D2.png")
 3.  *Column 3: interact `bac1` with cutoff linearly and as a quadratic*
 4.  *For all analysis, estimate uncertainty using heteroskedastic robust standard errors. [ed: But if you want to show off, use Kolesár and Rothe's 2018 "honest" confidence intervals (only available in R).]*
 
+```{r kern_weight_tab3}
+dwi$wtc1 <- kernelwts(dwi$bac1, center = 0.08, bw = 0.5, kernel = "rectangular")
+
+dwi$wtc2 <- kernelwts(dwi$bac1, center = 0.08, bw = 0.25, kernel = "rectangular")
+```
+
+```{r test_data}
+# test data to get LATE estimate
+test_data_tab3 <- data.frame(
+  dui = c(0, 1), 
+  bac1 = c(.08, .08),
+  year = mean(dwi$year),
+  male = mean(dwi$male),
+  white = mean(dwi$white),
+  aged = mean(dwi$aged)
+)
+```
+
 #### **Panel A**
 
 Panel A contains estimates with a bandwidth of 0.05, with all regressions utilizing a rectangular kernel for weighting.
 
-```{r kern_rect}
-# kernel weights (rectangular)
-dwi$wt_3A <- kernelwts(dwi$bac1, center = 0.08, bw = 0.05, kernel = "rectangular")
-```
-
 ```{r pAc1}
 # column 1 -- control for bac1 linearly
-model_3a1 <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + year + 
-                         male + white + aged, 
-                       weights = wt_3A, data = subset(dwi, wt_3A > 0))
 
-# model summary
-modelsummary(model_3a1)
+model_3a1 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       year + male + white + aged,
+                       data = dwi,
+                       subset = wtc1 > 0,
+                       weights = wtc1,
+                       se_type = "stata", 
+                       clusters = dui)
+
+# LATE
+tab3col1a1 <- lmtest::coeftest(model_3a1)["dui",] 
 ```
 
-```{r}
+```{r pAc2}
 # column 2 -- control for bac1 with cutoff linearly
+
+model_3a2 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       dui:I(bac1 - .08) + year + male + white + aged,
+                       data = dwi,
+                       subset = wtc1 > 0,
+                       weights = wtc1,
+                       se_type = "stata", 
+                       clusters = dui)
+
+# LATE
+tab3col1a2 <- lmtest::coeftest(model_3a2)["dui",] 
 ```
 
-```{r}
+```{r pAc3}
 # column 3 -- interact bac1 with cutoff linearly and as quadratic
+
+model_3a3 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       dui:I(bac1 - .08) + 
+                       I((bac1 - .08)^2) + 
+                       dui:I((bac1 - .08)^2) +
+                       year + male + white + aged,
+                       data = dwi, 
+                       subset = wtc1 > 0,
+                       weights = wtc1,
+                       se_type = "stata", 
+                       clusters = dui)
+
+# LATE
+tab3col1a3 <- lmtest::coeftest(model_3a3)["dui",] 
 ```
 
 #### **Panel B**
 
 Panel B contains estimates with a bandwidth of 0.025, with all regressions utilizing a rectangular kernel for weighting.
 
-```{r kern_weights2}
-# kernel weights (rectangular)
-dwi$wt_3B <- kernelwts(dwi$bac1, center = 0.08, bw = 0.025, kernel = "rectangular")
+```{r pBc1}
+model_3b1 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       year + male + white + aged,
+                       data = dwi,
+                       subset = wtc2 > 0,
+                       weights = wtc2,
+                       se_type = "stata", 
+                       clusters = dui)
+
+# LATE
+tab3col1b1 <- lmtest::coeftest(model_3b1)["dui",] 
 ```
 
-```{r}
-model_3b1 <- lm_robust(recidivism ~ dui + bac1 + dui * bac1 + 
-                         year + male + white + aged, 
-                       weights = wt_3B, data = subset(dwi, wt_3B > 0))
+```{r pBc2}
+model_3b2 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       dui:I(bac1 - .08) + year + male + white + aged,
+                       data = dwi,
+                       subset = wtc2 > 0,
+                       weights = wtc2,
+                       se_type = "stata", 
+                       clusters = dui)
 
-# model summary
-summary(model_3b1)
+# LATE
+tab3col1b2 <- lmtest::coeftest(model_3b2)["dui",] 
+```
+
+```{r PBc3}
+model_3b3 <- lm_robust(recidivism ~ dui + (I(bac1 - .08)) + 
+                       dui:I(bac1 - .08) + 
+                       I((bac1 - .08)^2) + 
+                       dui:I((bac1 - .08)^2) +
+                       year + male + white + aged,
+                       data = dwi, 
+                       subset = wtc2 > 0,
+                       weights = wtc2,
+                       se_type = "stata", 
+                       clusters = dui)
+
+# LATE
+tab3col1b3 <- lmtest::coeftest(model_3b3)["dui",] 
+```
+
+```{r tab3, message=FALSE, warning=FALSE}
+tab3_panelA <- cbind(tab3col1a1, tab3col1a2, tab3col1a3) %>% round(3) %>% head(2)
+
+tab3_panelA_append <- tibble(
+  Mean = c(round(mean(model_3a1$fitted.values),2), 
+           round(mean(model_3a2$fitted.values),2), 
+           round(mean(model_3a3$fitted.values),2)),
+  Controls = "Yes",
+  Observations = c(model_3a1$nobs, model_3a2$nobs, model_3a3$nobs)
+) %>% t()
+
+tab3_panelA <- rbind(tab3_panelA, tab3_panelA_append)
+
+tab3_panelB <- cbind(tab3col1b1, tab3col1b2, tab3col1b3) %>% round(3) %>% head(2)
+
+tab3_panelB_append <- tibble(
+  Mean = c(round(mean(model_3b1$fitted.values),2), 
+           round(mean(model_3b2$fitted.values),2), 
+           round(mean(model_3b3$fitted.values),2)),
+  Controls = "Yes",
+  Observations = c(model_3b1$nobs, model_3b2$nobs, model_3b3$nobs)
+) %>% t()
+
+tab3_panelB <- rbind(tab3_panelB, tab3_panelB_append)
+
+cbind(tab3_panelA, tab3_panelB) %>% 
+  kbl(col.names = c("Control", "Linear", "Quadratic", 
+                    "Control", "Linear", "Quadratic"),
+      booktabs = T) %>%
+  kable_classic() %>%
+  footnote(general = "This table contains regression discontinuity based estimates of the effect of having BAC above the DUI threshold on recidivism for all drivers. Panel A contains estimates with a bandwidth of 0.05 while Panel B has a bandwidth of 0.025, with all regressions utilizing a rectangular kernel for weighting. Controls include indicators for county, year, race, gender, and age of the offender. Based on administrative records from the Washington State Impaired Driver Testing Program, 1999–2007. ", threeparttable = T) %>%
+  add_header_above(c(" " = 1, 
+                     "Panel A. BAC in [0.03, 0.13]" = 3, 
+                     "Panel B. BAC in [0.055, 0.105]" = 3)) 
 ```
 
 ### Figure 3
@@ -591,7 +700,7 @@ summary(model_3b1)
 dwi$wt_f3B <- kernelwts(dwi$bac1, center = 0.15, bw = 0.002, kernel = "rectangular")
 ```
 
-```{r panA}
+```{r fig3_panA}
 # Panel A. All offenders
 
 # linear
@@ -610,10 +719,11 @@ A_all_lin <-
                            breaks = c(0.05, 0.1, 0.15, 0.2)) + 
         scale_y_continuous(limits = c(0.07, 0.17), 
                            breaks = c(0.08, 0.1, 0.12, 0.14, 0.16)) + 
-        labs(title = "Panel A. All offenders", subtitle = "Linear fit") +
-        theme_classic() + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Linear") +
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -637,10 +747,11 @@ A_all_quad <-
                            breaks = c(0.05, 0.1, 0.15, 0.2)) + 
         scale_y_continuous(limits = c(0.07, 0.17), 
                            breaks = c(0.08, 0.1, 0.12, 0.14, 0.16)) + 
-        labs(title = "Panel A. All offenders", subtitle = "Quadratic fit") +
-        theme_classic() + 
+        scale_color_manual(values = c("#607d8b", "#607d8b", "#607d8b")) +
+        labs(title = "Quadratic") +
+        theme_clean() + 
         theme(panel.grid.major.y = element_line(color = "grey", size=0.5),
-              plot.title = element_text(size=20),
+              plot.background = element_rect(color = "white"),
               axis.text.x = element_text(size = 15),
               axis.title.x = element_text(size = 17),
               axis.text.y = element_text(size = 15),
@@ -648,7 +759,16 @@ A_all_quad <-
               legend.position = "None") +
         coord_fixed()
 
-A_all_lin + A_all_quad
+(A_all_lin + A_all_quad) +
+  plot_annotation(title = "Panel A. All offenders")
+```
+
+```{r fig3_save, include=FALSE, eval=FALSE}
+ggsave(filename = "../Figures/figure3_linear.pdf", plot = A_all_lin, device = cairo_pdf())
+ggsave(filename = "../Figures/figure3_linear.png", plot = A_all_lin)
+
+ggsave(filename = "../Figures/figure3_quadr.pdf", plot = A_all_quad, device = cairo_pdf())
+ggsave(filename = "../Figures/figure3_quadr.png", plot = A_all_quad)
 ```
 
 ### Reflecting on exercise
